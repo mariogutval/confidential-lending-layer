@@ -50,9 +50,10 @@ function getChainConfig(chain: keyof typeof chainIds): NetworkUserConfig {
   }
   return {
     accounts: {
-      count: 10,
       mnemonic,
       path: "m/44'/60'/0'/0",
+      initialIndex: 0,
+      count: 10,
     },
     chainId: chainIds[chain],
     url: jsonRpcUrl,
