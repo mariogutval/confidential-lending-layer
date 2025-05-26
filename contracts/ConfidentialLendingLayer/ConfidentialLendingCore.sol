@@ -42,6 +42,10 @@ contract ConfidentialLendingCore is
     uint256 public constant MAX_VAULT_LTV  = 8_000;   // 80 %
     uint256 public constant MIN_USER_HF_BP = 11_500;  // 1.15×
 
+    // Price constants (in USD, with 6 decimals)
+    uint256 public constant WETH_PRICE_USD = 3_000_000_000;  // $3,000 per WETH
+    uint256 public constant USDC_PRICE_USD = 1_000_000;      // $1 per USDC
+
     /* ───────────────────────────── TOKENS ─────────────────────────── */
     IERC20  public immutable collateralToken;
     IERC20  public immutable debtToken;
@@ -58,7 +62,7 @@ contract ConfidentialLendingCore is
     mapping(uint256 => PendingBorrow) private _pendingBorrow;
 
     struct PendingRepay { address user; uint256 amount; }
-    mapping(uint256 => PendingRepay) private _pendingRepay;
+    mapping(uint256 => address) private _pendingRepay;
 
     /* ───────────────────────────── EVENTS ─────────────────────────── */
     event CollateralDeposited(address indexed user, uint256 amount);
@@ -77,7 +81,24 @@ contract ConfidentialLendingCore is
 
     /* ─────────────────────────── HELPERS ──────────────────────────── */
     function _requireVaultHealthy(uint256 newDebt) internal view {
-        require(newDebt * BASIS_POINTS <= totalCollateral * MAX_VAULT_LTV, "vault HF low");
+        // Convert both amounts to USD (6 decimals)
+        // WETH collateral is in 18 decimals, so divide by 1e18 and multiply by WETH price
+        // totalCollateral is in 18 decimals (WETH)
+        // WETH_PRICE_USD is in 6 decimals
+        // Result should be in 6 decimals
+        uint256 collateralUsd = (totalCollateral * WETH_PRICE_USD) / 1e18;
+
+        // USDC debt is in 6 decimals
+        // USDC_PRICE_USD is in 6 decimals
+        // Result should be in 6 decimals
+        uint256 debtUsd = (newDebt * USDC_PRICE_USD) / 1e6;
+
+        console.log("Vault health check - Collateral USD:", collateralUsd);
+        console.log("Vault health check - Debt USD:", debtUsd);
+        console.log("Vault health check - Collateral raw:", totalCollateral);
+        console.log("Vault health check - Debt raw:", newDebt);
+        
+        require(debtUsd * BASIS_POINTS <= collateralUsd * MAX_VAULT_LTV, "vault HF low");
     }
 
     function _safeSlot(euint64 s) internal returns (euint64) {
@@ -112,29 +133,49 @@ contract ConfidentialLendingCore is
         euint64 amtEnc = TFHE.asEuint64(encAmt, proofAmt);
 
         // encrypted HF check
+        euint64 coll = _safeSlot(_eColl[msg.sender]);
+        euint64 debt = _safeSlot(_eDebt[msg.sender]);
+        
+        // Request decryption of values for logging
+        uint256[] memory cts = new uint256[](3);
+        cts[0] = Gateway.toUint256(coll);
+        cts[1] = Gateway.toUint256(debt);
+        cts[2] = Gateway.toUint256(amtEnc);
+        Gateway.requestDecryption(cts, this.logBorrowValues.selector, 0, block.timestamp + 300, false);
+
         ebool hfOk = TFHE.ge(
-            TFHE.mul(_safeSlot(_eColl[msg.sender]), TFHE.asEuint64(uint64(BASIS_POINTS))),
-            TFHE.mul(_safeSlot(_eDebt[msg.sender]), TFHE.asEuint64(uint64(MIN_USER_HF_BP)))
+            TFHE.mul(coll, TFHE.asEuint64(uint64(BASIS_POINTS))),
+            TFHE.mul(debt, TFHE.asEuint64(uint64(MIN_USER_HF_BP)))
         );
         euint64 queued = TFHE.select(hfOk, amtEnc, TFHE.asEuint64(uint64(0)));
         TFHE.allow(queued, address(this));
 
-        uint256[] memory cts = new uint256[](1); cts[0] = Gateway.toUint256(queued);
+        cts = new uint256[](1);
+        cts[0] = Gateway.toUint256(queued);
         uint256 id = Gateway.requestDecryption(cts, this.borrowCallback.selector, 0, block.timestamp + 300, false);
         _pendingBorrow[id] = PendingBorrow(msg.sender, queued);
         emit BorrowQueued(msg.sender, id);
     }
 
+    function logBorrowValues(uint64 coll, uint64 debt, uint64 amt) external onlyGateway {
+        console.log("Borrow - User collateral:", coll);
+        console.log("Borrow - User debt:", debt);
+        console.log("Borrow - Requested amount:", amt);
+    }
+
     function borrowCallback(uint256 id, uint64 amt) external onlyGateway nonReentrant {        
-        console.log("BorrowCallback");
         PendingBorrow memory p = _pendingBorrow[id]; 
         delete _pendingBorrow[id];
         
         if (amt == 0) {
+            console.log("BorrowCallback - Amount is 0, rejecting");
             return; // rejected
         }
 
         uint256 newDebt = totalDebt + amt; 
+        console.log("BorrowCallback - Current total debt:", totalDebt);
+        console.log("BorrowCallback - New total debt:", newDebt);
+        console.log("BorrowCallback - Total collateral:", totalCollateral);
         
         _requireVaultHealthy(newDebt);
         
@@ -149,7 +190,6 @@ contract ConfidentialLendingCore is
     }
 
     function repay(uint256 amt, einput encAmt, bytes calldata proofAmt) external whenNotPaused nonReentrant {
-        console.log("Repaying");
         require(amt > 0, "amt 0");
 
         euint64 amtEnc = TFHE.asEuint64(encAmt, proofAmt);
@@ -165,25 +205,22 @@ contract ConfidentialLendingCore is
         uint256[] memory cts = new uint256[](1);
         cts[0] = Gateway.toUint256(result);
         uint256 id = Gateway.requestDecryption(cts, this.repayCallback.selector, 0, block.timestamp + 120, false);
-        _pendingRepay[id] = PendingRepay(msg.sender, amt);
+        _pendingRepay[id] = msg.sender;
         emit RepayQueued(msg.sender, id);
     }
 
     function repayCallback(uint256 id, uint64 amt) external onlyGateway nonReentrant {
-        PendingRepay memory p = _pendingRepay[id];
-        console.log("RepayCallback");
-        console.log("SC - Balance of Alice before repay:", debtToken.balanceOf(p.user));
-        debtToken.safeTransferFrom(p.user, address(this), amt);
-        console.log("SC - Balance of Alice after repay:", debtToken.balanceOf(p.user));
+        address user = _pendingRepay[id];
+        debtToken.safeTransferFrom(user, address(this), amt);
         delete _pendingRepay[id];
 
         // Update debt and total debt
-        _eDebt[p.user] = TFHE.sub(_eDebt[p.user], TFHE.asEuint64(uint64(amt)));
-        TFHE.allow(_eDebt[p.user], p.user);
-        TFHE.allow(_eDebt[p.user], address(this));
+        _eDebt[user] = TFHE.sub(_eDebt[user], TFHE.asEuint64(uint64(amt)));
+        TFHE.allow(_eDebt[user], user);
+        TFHE.allow(_eDebt[user], address(this));
         totalDebt -= amt;
 
-        emit Repaid(p.user, amt);
+        emit Repaid(user, amt);
     }
 
     /* ─────────────── ADMIN & VIEWS ─────────────── */
