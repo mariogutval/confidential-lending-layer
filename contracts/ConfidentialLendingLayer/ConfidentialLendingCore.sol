@@ -65,7 +65,7 @@ contract ConfidentialLendingCore is
     event BorrowQueued(address indexed user, uint256 reqId);
     event Borrowed(address indexed user, uint256 amount);
     event RepayQueued(address indexed user, uint256 reqId);
-    event Repaid(address indexed user, uint256 amountBurned, uint256 refund);
+    event Repaid(address indexed user, uint256 amount);
     event Paused(); event Unpaused();
 
     /* ──────────────────────────── INIT ────────────────────────────── */
@@ -126,6 +126,7 @@ contract ConfidentialLendingCore is
     }
 
     function borrowCallback(uint256 id, uint64 amt) external onlyGateway nonReentrant {        
+        console.log("BorrowCallback");
         PendingBorrow memory p = _pendingBorrow[id]; 
         delete _pendingBorrow[id];
         
@@ -150,51 +151,39 @@ contract ConfidentialLendingCore is
     function repay(uint256 amt, einput encAmt, bytes calldata proofAmt) external whenNotPaused nonReentrant {
         console.log("Repaying");
         require(amt > 0, "amt 0");
-        debtToken.safeTransferFrom(msg.sender, address(this), amt);
 
         euint64 amtEnc = TFHE.asEuint64(encAmt, proofAmt);
         TFHE.allow(amtEnc, address(this));
         euint64 debtEnc = _safeSlot(_eDebt[msg.sender]);
+        TFHE.allow(debtEnc, address(this));
         
-        // Always use the repayment amount, handle refund in callback
-        ebool canBurn = TFHE.ge(debtEnc, amtEnc);
-        euint64 result = amtEnc;
+        // Compare debt and amount to determine if this is an over-repayment
+        ebool isOverRepayment = TFHE.lt(debtEnc, amtEnc);
+        euint64 result = TFHE.select(isOverRepayment, debtEnc, amtEnc);
         TFHE.allow(result, address(this));
         
-        uint256[] memory cts = new uint256[](1); cts[0] = Gateway.toUint256(result);
+        uint256[] memory cts = new uint256[](1);
+        cts[0] = Gateway.toUint256(result);
         uint256 id = Gateway.requestDecryption(cts, this.repayCallback.selector, 0, block.timestamp + 120, false);
         _pendingRepay[id] = PendingRepay(msg.sender, amt);
         emit RepayQueued(msg.sender, id);
     }
 
-    function repayCallback(uint256 id, bool ok) external onlyGateway nonReentrant {
+    function repayCallback(uint256 id, uint64 amt) external onlyGateway nonReentrant {
         PendingRepay memory p = _pendingRepay[id];
+        console.log("RepayCallback");
+        console.log("SC - Balance of Alice before repay:", debtToken.balanceOf(p.user));
+        debtToken.safeTransferFrom(p.user, address(this), amt);
+        console.log("SC - Balance of Alice after repay:", debtToken.balanceOf(p.user));
         delete _pendingRepay[id];
 
-        uint256 burn;
-        uint256 refund = p.amount;
-
-        if (ok) {
-            // Debt ≥ amount ⇒ burn full amount and no refund
-            burn = p.amount;
-            refund = 0;
-        } else {
-            // Debt < amount ⇒ burn only debt amount and refund excess
-            burn = totalDebt;
-            console.log("p.amount", p.amount);
-            console.log("burn", burn);
-            refund = p.amount - burn;
-        }
-
         // Update debt and total debt
-        _eDebt[p.user] = TFHE.sub(_eDebt[p.user], TFHE.asEuint64(uint64(burn)));
+        _eDebt[p.user] = TFHE.sub(_eDebt[p.user], TFHE.asEuint64(uint64(amt)));
         TFHE.allow(_eDebt[p.user], p.user);
         TFHE.allow(_eDebt[p.user], address(this));
-        totalDebt -= burn;
+        totalDebt -= amt;
 
-        console.log("refund", refund);
-        if (refund > 0) debtToken.safeTransfer(p.user, refund);
-        emit Repaid(p.user, burn, refund);
+        emit Repaid(p.user, amt);
     }
 
     /* ─────────────── ADMIN & VIEWS ─────────────── */

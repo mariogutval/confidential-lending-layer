@@ -144,6 +144,7 @@ describe("ConfidentialLendingCore", function () {
 
     // Mint 6 000 USDC and approve
     await this.debt.mint(this.signers.alice, 600 * 1e6); // Reduced from 6000 to 600 USDC
+    console.log("Test - Balance of Alice:", await this.debt.balanceOf(this.signers.alice));
     await this.debt.connect(this.signers.alice).approve(this.core, 600 * 1e6);
 
     // Create an encrypted input for the repay amount
@@ -154,18 +155,28 @@ describe("ConfidentialLendingCore", function () {
     // Attempt to repay 6 000 USDC
     const repayTx = await this.core.repay(600 * 1e6, encR.handles[0], encR.inputProof);
     await repayTx.wait();
+    console.log("Repay transaction completed");
+
+    console.log("Test - Balance of Alice after repay:", await this.debt.balanceOf(this.signers.alice));
+    console.log("Alice's debt before repay:", (await debug.decrypt64(await this.core.encryptedDebtOf(this.signers.alice))).toString());
 
     // Wait for the gateway to process the repay decryption and callback
+    console.log("Waiting for decryption results...");
     await awaitAllDecryptionResults();
+    console.log("Decryption results received");
+
+    console.log("Test - Balance of Alice after repayCallback:", await this.debt.balanceOf(this.signers.alice));
 
     // Alice balance should be refunded back to 600
     const balAfter = await this.debt.balanceOf(this.signers.alice);
+    console.log("Alice's balance after repay:", balAfter.toString());
     expect(balAfter).to.equal(600 * 1e6);
 
-    // Debt remains 500 after failed over‑repay
+    // Debt must be 0 after repay
     const debtHandle = await this.core.encryptedDebtOf(this.signers.alice);
     const d = await debug.decrypt64(debtHandle);
-    expect(d).to.equal(500 * 1e6);
+    console.log("Alice's debt after repay:", d.toString());
+    expect(d).to.equal(0);
   });
 
   it("DEBUG – hardhat decrypt helpers", async function () {
