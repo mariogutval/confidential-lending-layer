@@ -311,4 +311,53 @@ describe("ConfidentialLendingCore", function () {
       await expect(awaitAllDecryptionResults()).to.not.be.reverted;
     });
   });
+
+  describe("Edge cases", function () {
+    it("should handle borrow rejection in callback when amt == 0", async function () {
+      // Create encrypted inputs with zero amount
+      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      zeroIn.add256(0);
+      const encZero = await zeroIn.encrypt();
+      
+      // Queue a borrow with zero amount
+      const borrowTx = await this.core.borrow(encZero.handles[0], encZero.inputProof);
+      await borrowTx.wait();
+      
+      // The callback should return early without reverting
+      await expect(awaitAllDecryptionResults()).to.not.be.reverted;
+    });
+
+    it("should reject zero amount deposits and repays", async function () {
+      // Create encrypted inputs
+      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      zeroIn.add256(0);
+      const encZero = await zeroIn.encrypt();
+      
+      // Try to deposit zero amount
+      await expect(
+        this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof)
+      ).to.be.revertedWith("amt 0");
+      
+      // Try to repay zero amount
+      await expect(
+        this.core.repay(0, encZero.handles[0], encZero.inputProof)
+      ).to.be.revertedWith("amt 0");
+    });
+  });
+
+  describe("Gateway access control", function () {
+    it("should only allow gateway to call borrowCallback", async function () {
+      // Try to call borrowCallback directly as a non-gateway address
+      await expect(
+        this.core.connect(this.signers.bob).borrowCallback(0, 0)
+      ).to.be.revertedWithoutReason();
+    });
+
+    it("should only allow gateway to call repayCallback", async function () {
+      // Try to call repayCallback directly as a non-gateway address
+      await expect(
+        this.core.connect(this.signers.bob).repayCallback(0, 0)
+      ).to.be.revertedWithoutReason();
+    });
+  });
 });

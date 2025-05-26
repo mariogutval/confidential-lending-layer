@@ -11,7 +11,6 @@ pragma solidity 0.8.24;
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -30,7 +29,6 @@ contract ConfidentialLendingCore is
     SepoliaZamaFHEVMConfig,
     SepoliaZamaGatewayConfig,
     GatewayCaller,
-    ReentrancyGuard,
     Pausable,
     Ownable
 {
@@ -99,10 +97,10 @@ contract ConfidentialLendingCore is
         // Result should be in 6 decimals
         uint256 debtUsd = (newDebt * USDC_PRICE_USD) / 1e6;
 
-        uint256 maxBorrow = collateralUsd * MAX_VAULT_LTV;
-        uint256 totalDebt = debtUsd * BASIS_POINTS;
+        uint256 maxBorrowUSD = collateralUsd * MAX_VAULT_LTV;
+        uint256 totalDebtUSD = debtUsd * BASIS_POINTS;
 
-        require(maxBorrow >= totalDebt, "vault HF low");
+        require(maxBorrowUSD >= totalDebtUSD, "vault HF low");
     }
 
     function _safeSlot(euint256 s) internal returns (euint256) {
@@ -117,7 +115,7 @@ contract ConfidentialLendingCore is
         uint256 amt,
         einput encZeroDebt,
         bytes calldata proofZeroDebt
-    ) external whenNotPaused nonReentrant {
+    ) external whenNotPaused {
         require(amt > 0, "amt 0");
         collateralToken.safeTransferFrom(msg.sender, address(this), amt);
 
@@ -135,7 +133,7 @@ contract ConfidentialLendingCore is
         emit CollateralDeposited(msg.sender, amt);
     }
 
-    function borrow(einput encAmt, bytes calldata proofAmt) external whenNotPaused nonReentrant {
+    function borrow(einput encAmt, bytes calldata proofAmt) external whenNotPaused {
         euint256 amtEnc = TFHE.asEuint256(encAmt, proofAmt);
 
         // encrypted HF check
@@ -156,7 +154,7 @@ contract ConfidentialLendingCore is
         emit BorrowQueued(msg.sender, id);
     }
 
-    function borrowCallback(uint256 id, uint256 amt) external onlyGateway nonReentrant {
+    function borrowCallback(uint256 id, uint256 amt) external onlyGateway {
         PendingBorrow memory p = _pendingBorrow[id];
         delete _pendingBorrow[id];
 
@@ -179,7 +177,7 @@ contract ConfidentialLendingCore is
         emit Borrowed(p.user, amt);
     }
 
-    function repay(uint256 amt, einput encAmt, bytes calldata proofAmt) external whenNotPaused nonReentrant {
+    function repay(uint256 amt, einput encAmt, bytes calldata proofAmt) external whenNotPaused {
         require(amt > 0, "amt 0");
 
         euint256 amtEnc = TFHE.asEuint256(encAmt, proofAmt);
@@ -199,7 +197,7 @@ contract ConfidentialLendingCore is
         emit RepayQueued(msg.sender, id);
     }
 
-    function repayCallback(uint256 id, uint256 amt) external onlyGateway nonReentrant {
+    function repayCallback(uint256 id, uint256 amt) external onlyGateway {
         address user = _pendingRepay[id];
         debtToken.safeTransferFrom(user, address(this), amt);
         delete _pendingRepay[id];
