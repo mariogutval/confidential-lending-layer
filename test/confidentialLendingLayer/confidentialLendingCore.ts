@@ -47,11 +47,7 @@ describe("ConfidentialLendingCore", function () {
 
   it("should accept a collateral deposit and expose encrypted balance", async function () {
     await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("3"));
-    const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-    zeroIn.add256(0);
-    const encZero = await zeroIn.encrypt();
-    await (await this.core.depositCollateral(ethers.parseEther("3"), encZero.handles[0], encZero.inputProof)).wait();
-
+    await (await this.core.depositCollateral(ethers.parseEther("3"))).wait();
     const handle = await this.core.encryptedCollOf(this.signers.alice);
     const val = await reencryptEuint256(this.signers.alice, this.fhevm, handle, await this.core.getAddress());
     expect(val).to.equal(ethers.parseEther("3"));
@@ -60,10 +56,7 @@ describe("ConfidentialLendingCore", function () {
   it("should queue a borrow and settle via callback in mocked mode", async function () {
     // Deposit collateral first
     await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
-    const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-    zeroIn.add256(0);
-    const encZero = await zeroIn.encrypt();
-    await (await this.core.depositCollateral(ethers.parseEther("5"), encZero.handles[0], encZero.inputProof)).wait();
+    await (await this.core.depositCollateral(ethers.parseEther("5"))).wait();
 
     const collHandle = await this.core.encryptedCollOf(this.signers.alice);
     const c = await debug.decrypt256(collHandle);
@@ -91,10 +84,7 @@ describe("ConfidentialLendingCore", function () {
   it("should ignore an over‑repayment", async function () {
     // Alice deposits and borrows 5 000 USDC
     await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
-    const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-    zeroIn.add256(0);
-    const encZ = await zeroIn.encrypt();
-    await (await this.core.depositCollateral(ethers.parseEther("5"), encZ.handles[0], encZ.inputProof)).wait();
+    await (await this.core.depositCollateral(ethers.parseEther("5"))).wait();
 
     const encBorrow = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
     encBorrow.add256(500 * 1e6); // Reduced from 5000 to 500 USDC
@@ -141,11 +131,6 @@ describe("ConfidentialLendingCore", function () {
   describe("Admin functions", function () {
     it("should allow owner to pause and unpause", async function () {
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
-      // Create encrypted inputs for testing
-      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      zeroIn.add256(0);
-      const encZero = await zeroIn.encrypt();
-
       const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
       encIn.add256(100 * 1e6);
       const encAmt = await encIn.encrypt();
@@ -153,7 +138,7 @@ describe("ConfidentialLendingCore", function () {
       // Test pause
       await this.core.connect(this.signers.alice).pause();
       await expect(
-        this.core.depositCollateral(ethers.parseEther("1"), encZero.handles[0], encZero.inputProof),
+        this.core.depositCollateral(ethers.parseEther("1")),
       ).to.be.revertedWithCustomError(this.core, "EnforcedPause");
       await expect(this.core.borrow(encAmt.handles[0], encAmt.inputProof)).to.be.revertedWithCustomError(
         this.core,
@@ -166,7 +151,7 @@ describe("ConfidentialLendingCore", function () {
 
       // Test unpause
       await this.core.unpause();
-      await this.core.depositCollateral(ethers.parseEther("1"), encZero.handles[0], encZero.inputProof);
+      await this.core.depositCollateral(ethers.parseEther("1"));
       await this.core.borrow(encAmt.handles[0], encAmt.inputProof);
       await this.core.repay(100 * 1e6, encAmt.handles[0], encAmt.inputProof);
     });
@@ -187,18 +172,13 @@ describe("ConfidentialLendingCore", function () {
 
   describe("View functions", function () {
     it("should return encrypted debt and collateral amounts", async function () {
-      // Create encrypted inputs
-      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      zeroIn.add256(0);
-      const encZero = await zeroIn.encrypt();
-
       const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
       encIn.add256(100 * 1e6);
       const encAmt = await encIn.encrypt();
 
       // Deposit collateral and borrow
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("1"));
-      await this.core.depositCollateral(ethers.parseEther("1"), encZero.handles[0], encZero.inputProof);
+      await this.core.depositCollateral(ethers.parseEther("1"));
       await this.core.borrow(encAmt.handles[0], encAmt.inputProof);
 
       // Check encrypted amounts
@@ -212,15 +192,10 @@ describe("ConfidentialLendingCore", function () {
 
   describe("Vault health checks", function () {
     it("should prevent borrowing when vault health factor is too low", async function () {
-      // Create encrypted inputs
-      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      zeroIn.add256(0);
-      const encZero = await zeroIn.encrypt();
-
       // Deposit collateral (10 WETH)
       // At $3,000 per WETH, this is $30,000 worth of collateral
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
-      await this.core.depositCollateral(ethers.parseEther("10"), encZero.handles[0], encZero.inputProof);
+      await this.core.depositCollateral(ethers.parseEther("10"));
 
       const collHandle = await this.core.encryptedCollOf(this.signers.alice);
       const c = await debug.decrypt256(collHandle);
@@ -256,14 +231,9 @@ describe("ConfidentialLendingCore", function () {
     });
 
     it("should prevent borrowing when user health factor is too low", async function () {
-      // Create encrypted inputs
-      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      zeroIn.add256(0);
-      const encZero = await zeroIn.encrypt();
-
       // Deposit collateral (10 WETH)
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
-      await this.core.depositCollateral(ethers.parseEther("10"), encZero.handles[0], encZero.inputProof);
+      await this.core.depositCollateral(ethers.parseEther("10"));
 
       // Try to borrow an amount that would make the user's health factor too low
       // MIN_USER_HF_BP is 11500 (1.15x), so we need to borrow more than 8.7 USDC
@@ -291,18 +261,13 @@ describe("ConfidentialLendingCore", function () {
     });
 
     it("should allow borrowing within vault health factor limits", async function () {
-      // Create encrypted inputs
-      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      zeroIn.add256(0);
-      const encZero = await zeroIn.encrypt();
-
       const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
       encIn.add256(500 * 1e6); // Safe amount within MAX_VAULT_LTV
       const encSafeAmt = await encIn.encrypt();
 
       // Deposit collateral
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
-      await this.core.depositCollateral(ethers.parseEther("10"), encZero.handles[0], encZero.inputProof);
+      await this.core.depositCollateral(ethers.parseEther("10"));
 
       // Borrow an amount within LTV limits
       await this.core.borrow(encSafeAmt.handles[0], encSafeAmt.inputProof);
@@ -333,7 +298,7 @@ describe("ConfidentialLendingCore", function () {
 
       // Try to deposit zero amount
       await expect(
-        this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof),
+        this.core.depositCollateral(0),
       ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
 
       // Try to repay zero amount

@@ -14,8 +14,8 @@ export async function deployCoreFixture() {
   await coll.mint(signers.alice, ethers.parseEther("10"));
 
   // ── Deploy MockPool and pre‑fund with 10 000 USDC ────────────────────
-  const Pool = await ethers.getContractFactory("MockPool");
-  const pool = await Pool.deploy(coll.getAddress(), debt.getAddress());
+  const Pool = await ethers.getContractFactory("MockCompoundPool");
+  const pool = await Pool.deploy(coll.getAddress());
   await debt.mint(await pool.getAddress(), ethers.parseUnits("10000", 6));
 
   // ── Deploy Confidential Lending Core ─────────────────────────────────
