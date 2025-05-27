@@ -30,7 +30,7 @@ describe("ConfidentialLendingCore", function () {
     this.core = await ConfidentialLendingCore.deploy(
       await this.coll.getAddress(),
       await this.debt.getAddress(),
-      await this.pool.getAddress()
+      await this.pool.getAddress(),
     );
 
     // Fund the pool with debt tokens
@@ -333,29 +333,26 @@ describe("ConfidentialLendingCore", function () {
 
       // Try to deposit zero amount
       await expect(
-        this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof)
+        this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof),
       ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
 
       // Try to repay zero amount
-      await expect(
-        this.core.repay(0, encZero.handles[0], encZero.inputProof)
-      ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
+      await expect(this.core.repay(0, encZero.handles[0], encZero.inputProof)).to.be.revertedWithCustomError(
+        this.core,
+        "ZeroAmount",
+      );
     });
   });
 
   describe("Gateway access control", function () {
     it("should only allow gateway to call borrowCallback", async function () {
       // Try to call borrowCallback directly as a non-gateway address
-      await expect(
-        this.core.connect(this.signers.bob).borrowCallback(0, 0)
-      ).to.be.revertedWithoutReason();
+      await expect(this.core.connect(this.signers.bob).borrowCallback(0, 0)).to.be.revertedWithoutReason();
     });
 
     it("should only allow gateway to call repayCallback", async function () {
       // Try to call repayCallback directly as a non-gateway address
-      await expect(
-        this.core.connect(this.signers.bob).repayCallback(0, 0)
-      ).to.be.revertedWithoutReason();
+      await expect(this.core.connect(this.signers.bob).repayCallback(0, 0)).to.be.revertedWithoutReason();
     });
   });
 });
