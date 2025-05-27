@@ -116,9 +116,10 @@ describe("ConfidentialLendingCore", function () {
 
       // Test pause
       await this.core.connect(this.signers.alice).pause();
-      await expect(
-        this.core.depositCollateral(ethers.parseEther("1")),
-      ).to.be.revertedWithCustomError(this.core, "EnforcedPause");
+      await expect(this.core.depositCollateral(ethers.parseEther("1"))).to.be.revertedWithCustomError(
+        this.core,
+        "EnforcedPause",
+      );
       await expect(this.core.borrow(encAmt.handles[0], encAmt.inputProof)).to.be.revertedWithCustomError(
         this.core,
         "EnforcedPause",
@@ -284,9 +285,7 @@ describe("ConfidentialLendingCore", function () {
       const encZero = await zeroIn.encrypt();
 
       // Try to deposit zero amount
-      await expect(
-        this.core.depositCollateral(0),
-      ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
+      await expect(this.core.depositCollateral(0)).to.be.revertedWithCustomError(this.core, "ZeroAmount");
 
       // Try to repay zero amount
       await expect(this.core.repay(0, encZero.handles[0], encZero.inputProof)).to.be.revertedWithCustomError(

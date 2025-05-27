@@ -3,8 +3,8 @@ import { ethers } from "hardhat";
 import { getSigners, initSigners } from "../signers";
 
 export async function deployCoreFixture() {
-    await initSigners();
-    const signers = await getSigners();
+  await initSigners();
+  const signers = await getSigners();
 
   // ── Deploy mock ERC‑20 tokens ─────────────────────────────────────────
   const ERC20 = await ethers.getContractFactory("MockERC20");

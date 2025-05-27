@@ -88,7 +88,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     event Unpaused();
 
     /* ──────────────────────────── INIT ────────────────────────────── */
-    constructor(address _collateralToken, address _debtToken, address _collateralCToken, address _debtCToken) Ownable(msg.sender) {
+    constructor(
+        address _collateralToken,
+        address _debtToken,
+        address _collateralCToken,
+        address _debtCToken
+    ) Ownable(msg.sender) {
         collateralToken = IERC20(_collateralToken);
         debtToken = IERC20(_debtToken);
         collateralCToken = ICErc20(_collateralCToken);
@@ -101,7 +106,9 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     /* ─────────────────────────── HELPERS ──────────────────────────── */
     function _requireVaultHealthy(uint256 newCollateralCTokens, uint256 newDebt) internal view {
         // Convert collateral to USDC (6 decimals)
-        uint256 cTokenCollateralUsdc = (newCollateralCTokens * collateralCToken.exchangeRateStored() * WETH_PRICE_USDC) / 1e18;
+        uint256 cTokenCollateralUsdc = (newCollateralCTokens *
+            collateralCToken.exchangeRateStored() *
+            WETH_PRICE_USDC) / 1e18;
         uint256 maxBorrowUSDC = cTokenCollateralUsdc * MAX_VAULT_LTV;
         uint256 totalDebtUSDC = newDebt * BASIS_POINTS;
 
@@ -113,17 +120,11 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         euint256 encryptedDebtUnderlying
     ) internal returns (ebool isHealthy) {
         // Convert collateral to USDC
-        euint256 collateralInUsdc = TFHE.div(
-            TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC),
-            1e18
-        );
+        euint256 collateralInUsdc = TFHE.div(TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC), 1e18);
         TFHE.allow(collateralInUsdc, address(this));
 
         // Calculate max allowed debt in USDC
-        euint256 maxAllowedDebt = TFHE.div(
-            TFHE.mul(collateralInUsdc, BASIS_POINTS),
-            MIN_USER_HF_BP
-        );
+        euint256 maxAllowedDebt = TFHE.div(TFHE.mul(collateralInUsdc, BASIS_POINTS), MIN_USER_HF_BP);
         TFHE.allow(maxAllowedDebt, address(this));
 
         // Compare max allowed debt with actual debt (already in USDC)
@@ -142,7 +143,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     function _encryptedCollateralUnderlying(address user) internal returns (euint256) {
         // Cache the exchange rate to avoid multiple calls
         uint256 rate = collateralCToken.exchangeRateStored();
-        
+
         // Get current collateral and convert to underlying in one operation
         euint256 currentCollateral = _safeSlot(_encryptedCollateralCToken[user]);
         euint256 result = TFHE.div(TFHE.mul(currentCollateral, rate), 1e18);
@@ -165,16 +166,14 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         euint256 currentAmount = _safeSlot(_encryptedDebtUnderlying[user]);
         console.log("currentAmount", Gateway.toUint256(currentAmount));
         console.log("amount", Gateway.toUint256(amount));
-        
+
         // Update debt in one operation
-        _encryptedDebtUnderlying[user] = isAdd ? 
-            TFHE.add(currentAmount, amount) : 
-            TFHE.sub(currentAmount, amount);
+        _encryptedDebtUnderlying[user] = isAdd ? TFHE.add(currentAmount, amount) : TFHE.sub(currentAmount, amount);
 
         // Allow access to the updated value for both the contract and user
         TFHE.allow(_encryptedDebtUnderlying[user], address(this));
         TFHE.allow(_encryptedDebtUnderlying[user], user);
-        
+
         console.log("newAmount", Gateway.toUint256(_encryptedDebtUnderlying[user]));
     }
 
@@ -247,7 +246,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
 
         // Check health factor and queue borrow
         ebool isUserHealthy = _requireUserHealthy(encryptedCollateralUnderlying, encryptedDebtUnderlying);
-        
+
         // Use select to either use the requested amount or zero
         euint256 queued = TFHE.select(isUserHealthy, underlyingAmountEnc, TFHE.asEuint256(0));
         TFHE.allow(queued, address(this));
