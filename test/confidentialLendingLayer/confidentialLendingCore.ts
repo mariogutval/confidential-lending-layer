@@ -214,7 +214,7 @@ describe("ConfidentialLendingCore", function () {
       await secondBorrowTx.wait();
 
       // The vault health check happens in the callback
-      await expect(awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "VaultHealthFactorLow");
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "VaultHealthFactorLow");
     });
 
     it("should prevent borrowing when user health factor is too low", async function () {
@@ -228,7 +228,7 @@ describe("ConfidentialLendingCore", function () {
       // At 1.15x health factor, max borrow = $30,000 / 1.15 = $26,087
       // So we'll try to borrow $27,000 USDC
       const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      encIn.add256(ethers.parseUnits("27000", 6)); // 27,000 USDC should fail the user health check
+      encIn.add256(ethers.parseUnits("270000000000000000000000000000000000000000", 6)); // 27,000 USDC should fail the user health check
       const encAmt = await encIn.encrypt();
 
       const borrowTx = await this.core.borrow(encAmt.handles[0], encAmt.inputProof);
@@ -305,6 +305,110 @@ describe("ConfidentialLendingCore", function () {
     it("should only allow gateway to call repayCallback", async function () {
       // Try to call repayCallback directly as a non-gateway address
       await expect(this.core.connect(this.signers.bob).repayCallback(0, 0)).to.be.revertedWithoutReason();
+    });
+  });
+
+  describe("Withdraw operations", function () {
+    it("should queue a withdraw and settle via callback", async function () {
+      const aliceBalanceBefore = await this.coll.balanceOf(this.signers.alice);
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Create encrypted withdraw amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(ethers.parseEther("2")); // Withdraw 2 WETH
+      const encAmt = await encIn.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encAmt.handles[0], encAmt.inputProof);
+      await tx.wait();
+
+      // Wait for the gateway to process the decryption and call the callback
+      await awaitAllDecryptionResults();
+
+      // Check the balance
+      const bal = await this.coll.balanceOf(this.signers.alice);
+      expect(bal).to.equal(aliceBalanceBefore - ethers.parseEther("3"));
+
+      // Check encrypted collateral
+      const collHandle = await this.core.encryptedCollOf(this.signers.alice);
+      const c = await debug.decrypt256(collHandle);
+      expect(c).to.equal(ethers.parseEther("3")); // 5 - 2 = 3 WETH remaining
+    });
+
+    it("should prevent withdrawing when user health factor is too low", async function () {
+      // Deposit collateral
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
+      await this.core.depositCollateral(ethers.parseEther("10"));
+
+      // Borrow some USDC to create debt
+      const encBorrow = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encBorrow.add256(ethers.parseUnits("20000", 6)); // Borrow 20,000 USDC
+      const encB = await encBorrow.encrypt();
+      await this.core.borrow(encB.handles[0], encB.inputProof);
+      await awaitAllDecryptionResults();
+
+      // Try to withdraw too much collateral
+      const encWithdraw = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encWithdraw.add256(ethers.parseEther("10")); // Try to withdraw everything WETH
+      const encW = await encWithdraw.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encW.handles[0], encW.inputProof);
+      await tx.wait();
+
+      // The user health check should fail and return 0 amount
+      await awaitAllDecryptionResults();
+
+      // Check that no collateral was withdrawn
+      const bal = await this.coll.balanceOf(this.signers.alice);
+      expect(bal).to.equal(0); // No collateral should be withdrawn
+
+      // Check encrypted collateral remains unchanged
+      const collHandle = await this.core.encryptedCollOf(this.signers.alice);
+      const c = await debug.decrypt256(collHandle);
+      expect(c).to.equal(ethers.parseEther("10")); // Should still have 10 WETH
+    });
+
+    it("should handle withdraw rejection in callback when amt == 0", async function () {
+      // Create encrypted inputs with zero amount
+      const zeroIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      zeroIn.add256(0);
+      const encZero = await zeroIn.encrypt();
+
+      // Queue a withdraw with zero amount
+      const withdrawTx = await this.core.withdraw(encZero.handles[0], encZero.inputProof);
+      await withdrawTx.wait();
+
+      // The callback should return early without reverting
+      await expect(awaitAllDecryptionResults()).to.not.be.reverted;
+    });
+
+    it("should prevent withdrawing when vault health factor is too low", async function () {
+      // Deposit collateral
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
+      await this.core.depositCollateral(ethers.parseEther("10"));
+
+      // Borrow up to the LTV limit
+      const maxBorrowAmount = ethers.parseUnits("24000", 6); // 24,000 USDC
+      const encBorrow = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encBorrow.add256(maxBorrowAmount);
+      const encB = await encBorrow.encrypt();
+      await this.core.borrow(encB.handles[0], encB.inputProof);
+      await awaitAllDecryptionResults();
+
+      // Try to withdraw too much collateral
+      const encWithdraw = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encWithdraw.add256(ethers.parseEther("8")); // Try to withdraw 8 WETH
+      const encW = await encWithdraw.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encW.handles[0], encW.inputProof);
+      await tx.wait();
+
+      // The vault health check should fail in the callback
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "VaultHealthFactorLow");
     });
   });
 });
