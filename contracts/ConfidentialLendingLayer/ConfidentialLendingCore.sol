@@ -29,13 +29,7 @@ interface ICErc20 is IERC20 {
     function exchangeRateStored() external view returns (uint256); // 18‑dec
 }
 
-contract ConfidentialLendingCore is
-    SepoliaZamaFHEVMConfig,
-    SepoliaZamaGatewayConfig,
-    GatewayCaller,
-    Pausable,
-    Ownable
-{
+contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayConfig, GatewayCaller, Pausable, Ownable {
     using SafeERC20 for IERC20;
 
     /* ─────────────────────────── CONSTANTS ────────────────────────── */
@@ -114,15 +108,20 @@ contract ConfidentialLendingCore is
         require(maxBorrowUSD >= totalDebtUSD, "vault HF low");
     }
 
-    function _requireUserHealthy(euint256 encryptedCollateralUnderlying, euint256 encryptedDebtUnderlying) internal returns (ebool isHealthy) {
-        euint256 collateralUsd = TFHE.div(TFHE.mul(encryptedCollateralUnderlying, TFHE.asEuint256(WETH_PRICE_USD)), 1e18);
+    function _requireUserHealthy(
+        euint256 encryptedCollateralUnderlying,
+        euint256 encryptedDebtUnderlying
+    ) internal returns (ebool isHealthy) {
+        euint256 collateralUsd = TFHE.div(
+            TFHE.mul(encryptedCollateralUnderlying, TFHE.asEuint256(WETH_PRICE_USD)),
+            1e18
+        );
         euint256 debtUsd = TFHE.div(TFHE.mul(encryptedDebtUnderlying, TFHE.asEuint256(USDC_PRICE_USD)), 1e6);
 
         isHealthy = TFHE.ge(
             TFHE.mul(collateralUsd, TFHE.asEuint256(BASIS_POINTS)),
             TFHE.mul(debtUsd, TFHE.asEuint256(MIN_USER_HF_BP))
         );
-
     }
 
     function _safeSlot(euint256 s) internal returns (euint256) {
@@ -139,16 +138,11 @@ contract ConfidentialLendingCore is
     function _encryptedCollateralUnderlying(address user) internal returns (euint256) {
         uint256 rate = cToken.exchangeRateStored(); // 18‑dec
         // underlying = cTokens * rate / 1e18
-        return TFHE.div(
-            TFHE.mul(_safeSlot(_encryptedCollateralCToken[user]), TFHE.asEuint256(rate)),
-            1e18
-        );
+        return TFHE.div(TFHE.mul(_safeSlot(_encryptedCollateralCToken[user]), TFHE.asEuint256(rate)), 1e18);
     }
 
     /* ────────────────────────── USER ACTIONS ───────────────────────── */
-    function depositCollateral(
-        uint256 underlyingAmount
-    ) external whenNotPaused {
+    function depositCollateral(uint256 underlyingAmount) external whenNotPaused {
         require(underlyingAmount > 0, "amt 0");
         collateralToken.safeTransferFrom(msg.sender, address(this), underlyingAmount);
         uint256 cTokenBalanceBefore = cToken.balanceOf(address(this));
@@ -156,7 +150,10 @@ contract ConfidentialLendingCore is
         uint256 cTokenBalanceAfter = cToken.balanceOf(address(this));
         uint256 cTokenMinted = cTokenBalanceAfter - cTokenBalanceBefore;
 
-        _encryptedCollateralCToken[msg.sender] = TFHE.add(_safeSlot(_encryptedCollateralCToken[msg.sender]), TFHE.asEuint256(cTokenMinted));
+        _encryptedCollateralCToken[msg.sender] = TFHE.add(
+            _safeSlot(_encryptedCollateralCToken[msg.sender]),
+            TFHE.asEuint256(cTokenMinted)
+        );
         TFHE.allow(_encryptedCollateralCToken[msg.sender], msg.sender);
         TFHE.allow(_encryptedCollateralCToken[msg.sender], address(this));
         totalCollateralCTokens += cTokenMinted;
@@ -177,15 +174,17 @@ contract ConfidentialLendingCore is
         euint256 queued = TFHE.select(isUserHealthy, cTokenAmountEnc, TFHE.asEuint256(uint256(0)));
         TFHE.allow(queued, address(this));
 
-        uint256[] memory cts = new uint256[](1); cts[0] = Gateway.toUint256(queued);
-        uint256 id = Gateway.requestDecryption(cts, this.withdrawCallback.selector, 0, block.timestamp+120, false);
+        uint256[] memory cts = new uint256[](1);
+        cts[0] = Gateway.toUint256(queued);
+        uint256 id = Gateway.requestDecryption(cts, this.withdrawCallback.selector, 0, block.timestamp + 120, false);
         _pendingWithdraw[id] = PendingWithdraw(msg.sender, queued);
-        
+
         emit WithdrawQueued(msg.sender, id);
     }
 
     function withdrawCallback(uint256 id, uint256 withdrawAmount) external onlyGateway {
-        PendingWithdraw memory pendingWithdraw = _pendingWithdraw[id]; delete _pendingWithdraw[id];
+        PendingWithdraw memory pendingWithdraw = _pendingWithdraw[id];
+        delete _pendingWithdraw[id];
 
         if (withdrawAmount == 0) {
             return; // rejected
@@ -195,10 +194,13 @@ contract ConfidentialLendingCore is
 
         _requireVaultHealthy(newCollateralCTokens, totalDebtUnderlying);
 
-        _encryptedCollateralCToken[pendingWithdraw.user] = TFHE.sub(_safeSlot(_encryptedCollateralCToken[pendingWithdraw.user]), TFHE.asEuint256(withdrawAmount));
+        _encryptedCollateralCToken[pendingWithdraw.user] = TFHE.sub(
+            _safeSlot(_encryptedCollateralCToken[pendingWithdraw.user]),
+            TFHE.asEuint256(withdrawAmount)
+        );
         TFHE.allow(_encryptedCollateralCToken[pendingWithdraw.user], pendingWithdraw.user);
         TFHE.allow(_encryptedCollateralCToken[pendingWithdraw.user], address(this));
-        
+
         totalCollateralCTokens = newCollateralCTokens;
 
         uint256 collateralBalanceBefore = collateralToken.balanceOf(address(this));
@@ -207,7 +209,7 @@ contract ConfidentialLendingCore is
 
         uint256 underlyingAmount = collateralBalanceAfter - collateralBalanceBefore;
         collateralToken.safeTransfer(pendingWithdraw.user, underlyingAmount);
-        
+
         emit Withdrawn(pendingWithdraw.user, underlyingAmount);
     }
 
@@ -243,7 +245,10 @@ contract ConfidentialLendingCore is
         _requireVaultHealthy(totalCollateralCTokens, newDebt);
 
         // If we get here, the health check passed
-        _encryptedDebtUnderlying[pendingBorrow.user] = TFHE.add(_safeSlot(_encryptedDebtUnderlying[pendingBorrow.user]), TFHE.asEuint256(borrowAmount));
+        _encryptedDebtUnderlying[pendingBorrow.user] = TFHE.add(
+            _safeSlot(_encryptedDebtUnderlying[pendingBorrow.user]),
+            TFHE.asEuint256(borrowAmount)
+        );
         TFHE.allow(_encryptedDebtUnderlying[pendingBorrow.user], pendingBorrow.user);
         TFHE.allow(_encryptedDebtUnderlying[pendingBorrow.user], address(this));
         totalDebtUnderlying = newDebt;
@@ -253,7 +258,11 @@ contract ConfidentialLendingCore is
         emit Borrowed(pendingBorrow.user, borrowAmount);
     }
 
-    function repay(uint256 repayAmount, einput encryptedRepayAmount, bytes calldata proofRepayAmount) external whenNotPaused {
+    function repay(
+        uint256 repayAmount,
+        einput encryptedRepayAmount,
+        bytes calldata proofRepayAmount
+    ) external whenNotPaused {
         require(repayAmount > 0, "amt 0");
 
         euint256 repayAmountEnc = TFHE.asEuint256(encryptedRepayAmount, proofRepayAmount);
@@ -287,8 +296,6 @@ contract ConfidentialLendingCore is
 
         emit Repaid(user, repayAmount);
     }
-
-
 
     /* ─────────────── ADMIN & VIEWS ─────────────── */
     function pause() external onlyOwner {
