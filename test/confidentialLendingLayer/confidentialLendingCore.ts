@@ -18,23 +18,23 @@ describe("ConfidentialLendingCore", function () {
 
     // Deploy mock tokens
     const MockERC20 = await ethers.getContractFactory("MockERC20");
-    this.coll = await MockERC20.deploy("Collateral", "COLL");
-    this.debt = await MockERC20.deploy("Debt", "DEBT");
+    this.coll = await MockERC20.deploy("Wrapped Ether", "WETH");
+    this.debt = await MockERC20.deploy("USD Coin", "USDC");
 
-    // Deploy mock pool
-    const MockPool = await ethers.getContractFactory("MockPool");
-    this.pool = await MockPool.deploy(this.coll.getAddress(), this.debt.getAddress());
+    // Deploy mock Compound pool
+    const MockCompoundPool = await ethers.getContractFactory("MockCompoundPool");
+    this.pool = await MockCompoundPool.deploy(this.coll.getAddress());
 
     // Deploy core contract
     const ConfidentialLendingCore = await ethers.getContractFactory("ConfidentialLendingCore");
     this.core = await ConfidentialLendingCore.deploy(
       await this.coll.getAddress(),
       await this.debt.getAddress(),
-      await this.pool.getAddress(),
+      await this.pool.getAddress()
     );
 
     // Fund the pool with debt tokens
-    await this.debt.mint(await this.pool.getAddress(), ethers.parseEther("1000000"));
+    await this.debt.mint(await this.pool.getAddress(), ethers.parseUnits("1000000", 6));
   });
 
   beforeEach(async function () {
@@ -252,7 +252,7 @@ describe("ConfidentialLendingCore", function () {
       await secondBorrowTx.wait();
 
       // The vault health check happens in the callback
-      expect(await awaitAllDecryptionResults()).to.be.revertedWith("vault HF low");
+      await expect(awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "VaultHealthFactorLow");
     });
 
     it("should prevent borrowing when user health factor is too low", async function () {
@@ -281,7 +281,6 @@ describe("ConfidentialLendingCore", function () {
       try {
         await awaitAllDecryptionResults();
         // If we get here, the borrow was successful
-        const balance = await this.debt.balanceOf(this.signers.alice);
         throw new Error("Expected user health check to fail");
       } catch (error: any) {
         // The borrow should have been rejected with amount 0
@@ -333,22 +332,30 @@ describe("ConfidentialLendingCore", function () {
       const encZero = await zeroIn.encrypt();
 
       // Try to deposit zero amount
-      await expect(this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof)).to.be.revertedWith("amt 0");
+      await expect(
+        this.core.depositCollateral(0, encZero.handles[0], encZero.inputProof)
+      ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
 
       // Try to repay zero amount
-      await expect(this.core.repay(0, encZero.handles[0], encZero.inputProof)).to.be.revertedWith("amt 0");
+      await expect(
+        this.core.repay(0, encZero.handles[0], encZero.inputProof)
+      ).to.be.revertedWithCustomError(this.core, "ZeroAmount");
     });
   });
 
   describe("Gateway access control", function () {
     it("should only allow gateway to call borrowCallback", async function () {
       // Try to call borrowCallback directly as a non-gateway address
-      await expect(this.core.connect(this.signers.bob).borrowCallback(0, 0)).to.be.revertedWithoutReason();
+      await expect(
+        this.core.connect(this.signers.bob).borrowCallback(0, 0)
+      ).to.be.revertedWithoutReason();
     });
 
     it("should only allow gateway to call repayCallback", async function () {
       // Try to call repayCallback directly as a non-gateway address
-      await expect(this.core.connect(this.signers.bob).repayCallback(0, 0)).to.be.revertedWithoutReason();
+      await expect(
+        this.core.connect(this.signers.bob).repayCallback(0, 0)
+      ).to.be.revertedWithoutReason();
     });
   });
 });
