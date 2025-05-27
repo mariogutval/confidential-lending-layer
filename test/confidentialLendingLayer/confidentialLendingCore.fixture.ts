@@ -1,9 +1,10 @@
 import { ethers } from "hardhat";
 
-import { getSigners } from "../signers";
+import { getSigners, initSigners } from "../signers";
 
 export async function deployCoreFixture() {
-  const signers = await getSigners();
+    await initSigners();
+    const signers = await getSigners();
 
   // ── Deploy mock ERC‑20 tokens ─────────────────────────────────────────
   const ERC20 = await ethers.getContractFactory("MockERC20");
@@ -15,13 +16,14 @@ export async function deployCoreFixture() {
 
   // ── Deploy MockPool and pre‑fund with 10 000 USDC ────────────────────
   const Pool = await ethers.getContractFactory("MockCompoundPool");
-  const pool = await Pool.deploy(coll.getAddress());
-  await debt.mint(await pool.getAddress(), ethers.parseUnits("10000", 6));
+  const collPool = await Pool.deploy(coll.getAddress());
+  const debtPool = await Pool.deploy(debt.getAddress());
+  await debt.mint(await debtPool.getAddress(), ethers.parseUnits("10000", 6));
 
   // ── Deploy Confidential Lending Core ─────────────────────────────────
   const Core = await ethers.getContractFactory("ConfidentialLendingCore");
-  const core = await Core.deploy(coll.getAddress(), debt.getAddress(), pool.getAddress());
+  const core = await Core.deploy(coll.getAddress(), debt.getAddress(), collPool.getAddress(), debtPool.getAddress());
   await core.waitForDeployment();
 
-  return { core, coll, debt, pool };
+  return { core, coll, debt, collPool, debtPool, signers };
 }

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-interface IMintableERC20 is IERC20 {
+import "hardhat/console.sol";
+
+interface IMintableERC20 is IERC20Metadata {
     function mint(address to, uint256 amount) external;
 }
 
-contract MockCompoundPool is IERC20 {
-    using SafeERC20 for IERC20;
+contract MockCompoundPool is IERC20Metadata {
+    using SafeERC20 for IERC20Metadata;
 
-    IERC20 public immutable underlying;
+    IERC20Metadata public immutable underlying;
     uint256 private _totalSupply;
     mapping(address => uint256) private _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
@@ -22,9 +24,9 @@ contract MockCompoundPool is IERC20 {
     uint8 public constant decimals = 18;
 
     constructor(address _underlying) {
-        underlying = IERC20(_underlying);
-        name = string.concat("Compound ", IERC20(_underlying).name());
-        symbol = string.concat("c", IERC20(_underlying).symbol());
+        underlying = IERC20Metadata(_underlying);
+        name = string.concat("Compound ", IERC20Metadata(_underlying).name());
+        symbol = string.concat("c", IERC20Metadata(_underlying).symbol());
     }
 
     function mint(uint256 amount) external returns (uint256) {
@@ -41,10 +43,15 @@ contract MockCompoundPool is IERC20 {
 
     function borrow(uint256 amount) external returns (uint256) {
         // For testing, we'll mint the underlying token if needed
+        console.log("Borrowing");
         uint256 balance = underlying.balanceOf(address(this));
+        console.log("balance", balance);
         if (balance < amount) {
+            console.log("amount", amount);
             IMintableERC20(address(underlying)).mint(address(this), amount - balance);
+            console.log("minted", amount - balance);
         }
+        console.log("transfer");
         underlying.safeTransfer(msg.sender, amount);
         return 0; // Success
     }

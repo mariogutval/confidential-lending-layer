@@ -4,45 +4,24 @@ import { ethers, network } from "hardhat";
 import { awaitAllDecryptionResults, initGateway } from "../asyncDecrypt";
 import { createInstance } from "../instance";
 import { reencryptEuint256 } from "../reencrypt";
-import { getSigners, initSigners } from "../signers";
+import { getSigners } from "../signers";
 import { debug } from "../utils";
 import { deployCoreFixture } from "./confidentialLendingCore.fixture";
 
 describe("ConfidentialLendingCore", function () {
   before(async function () {
     // Initialize signers
-    await initSigners();
-    this.signers = await getSigners();
     this.fhevm = await createInstance();
     await initGateway();
-
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("MockERC20");
-    this.coll = await MockERC20.deploy("Wrapped Ether", "WETH");
-    this.debt = await MockERC20.deploy("USD Coin", "USDC");
-
-    // Deploy mock Compound pool
-    const MockCompoundPool = await ethers.getContractFactory("MockCompoundPool");
-    this.pool = await MockCompoundPool.deploy(this.coll.getAddress());
-
-    // Deploy core contract
-    const ConfidentialLendingCore = await ethers.getContractFactory("ConfidentialLendingCore");
-    this.core = await ConfidentialLendingCore.deploy(
-      await this.coll.getAddress(),
-      await this.debt.getAddress(),
-      await this.pool.getAddress(),
-    );
-
-    // Fund the pool with debt tokens
-    await this.debt.mint(await this.pool.getAddress(), ethers.parseUnits("1000000", 6));
   });
 
   beforeEach(async function () {
-    const { core, coll, debt, pool } = await deployCoreFixture();
+    const { core, coll, debt, pool, signers } = await deployCoreFixture();
     this.core = core;
     this.coll = coll;
     this.debt = debt;
     this.pool = pool;
+    this.signers = signers;
   });
 
   it("should accept a collateral deposit and expose encrypted balance", async function () {
@@ -64,7 +43,7 @@ describe("ConfidentialLendingCore", function () {
 
     // Request borrow - using a smaller amount that satisfies the vault health check
     const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-    encIn.add256(100 * 1e6); // Reduced from 1000 to 100 USDC
+    encIn.add256(100 * 1e6); // 100 USDC
     const encAmt = await encIn.encrypt();
     const tx = await this.core.borrow(encAmt.handles[0], encAmt.inputProof);
     await tx.wait();
@@ -171,29 +150,40 @@ describe("ConfidentialLendingCore", function () {
   });
 
   describe("View functions", function () {
-    it("should return encrypted debt and collateral amounts", async function () {
-      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      encIn.add256(100 * 1e6);
-      const encAmt = await encIn.encrypt();
-
-      // Deposit collateral and borrow
+    it.only("should return encrypted debt and collateral amounts", async function () {
+      // Deposit collateral first
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("1"));
       await this.core.depositCollateral(ethers.parseEther("1"));
-      await this.core.borrow(encAmt.handles[0], encAmt.inputProof);
+
+      // Create encrypted borrow amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(100 * 1e6); // 100 USDC
+      const encAmt = await encIn.encrypt();
+
+      // Borrow
+      await (await this.core.borrow(encAmt.handles[0], encAmt.inputProof)).wait();
+
+      await awaitAllDecryptionResults();
 
       // Check encrypted amounts
-      const encryptedDebt = await this.core.encryptedDebtOf(this.signers.alice.address);
+      console.log("Alice address", this.signers.alice.address);
       const encryptedColl = await this.core.encryptedCollOf(this.signers.alice.address);
+      console.log("encryptedColl", encryptedColl);
+      const encryptedDebt = await this.core.encryptedDebtOf(this.signers.alice.address);
+      console.log("encryptedDebt", encryptedDebt);
 
-      expect(encryptedDebt).to.not.equal(0);
-      expect(encryptedColl).to.not.equal(0);
+      // Decrypt and verify values
+      const coll = await debug.decrypt256(encryptedColl);
+      const debt = await debug.decrypt256(encryptedDebt);
+
+      expect(debt).to.equal(100 * 1e6);
+      expect(coll).to.equal(ethers.parseEther("1"));
     });
   });
 
   describe("Vault health checks", function () {
     it("should prevent borrowing when vault health factor is too low", async function () {
       // Deposit collateral (10 WETH)
-      // At $3,000 per WETH, this is $30,000 worth of collateral
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("10"));
       await this.core.depositCollateral(ethers.parseEther("10"));
 
@@ -202,8 +192,6 @@ describe("ConfidentialLendingCore", function () {
       expect(c).to.equal(ethers.parseEther("10"));
 
       // First borrow up to the LTV limit (80% of collateral)
-      // $30,000 * 80% = $24,000 worth of USDC
-      // Since USDC is $1 each, we can borrow 24,000 USDC
       const maxBorrowAmount = ethers.parseUnits("24000", 6); // 24,000 USDC
       const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
       encIn.add256(maxBorrowAmount);
@@ -218,9 +206,8 @@ describe("ConfidentialLendingCore", function () {
       expect(d).to.equal(maxBorrowAmount);
 
       // Now try to borrow more, which should fail the vault health check
-      // Try to borrow 1,000 more USDC, which would exceed the 80% LTV
       const encIn2 = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
-      encIn2.add256(BigInt(ethers.parseUnits("1000", 6))); // Try to borrow 1,000 more USDC
+      encIn2.add256(ethers.parseUnits("1000", 6)); // Try to borrow 1,000 more USDC
       const encAmt2 = await encIn2.encrypt();
 
       const secondBorrowTx = await this.core.borrow(encAmt2.handles[0], encAmt2.inputProof);
