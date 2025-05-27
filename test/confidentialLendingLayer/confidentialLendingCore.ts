@@ -4,7 +4,6 @@ import { ethers, network } from "hardhat";
 import { awaitAllDecryptionResults, initGateway } from "../asyncDecrypt";
 import { createInstance } from "../instance";
 import { reencryptEuint256 } from "../reencrypt";
-import { getSigners } from "../signers";
 import { debug } from "../utils";
 import { deployCoreFixture } from "./confidentialLendingCore.fixture";
 
@@ -16,11 +15,12 @@ describe("ConfidentialLendingCore", function () {
   });
 
   beforeEach(async function () {
-    const { core, coll, debt, pool, signers } = await deployCoreFixture();
+    const { core, coll, debt, collPool, debtPool, signers } = await deployCoreFixture();
     this.core = core;
     this.coll = coll;
     this.debt = debt;
-    this.pool = pool;
+    this.collPool = collPool;
+    this.debtPool = debtPool;
     this.signers = signers;
   });
 
@@ -150,7 +150,7 @@ describe("ConfidentialLendingCore", function () {
   });
 
   describe("View functions", function () {
-    it.only("should return encrypted debt and collateral amounts", async function () {
+    it("should return encrypted debt and collateral amounts", async function () {
       // Deposit collateral first
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("1"));
       await this.core.depositCollateral(ethers.parseEther("1"));
