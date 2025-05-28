@@ -32,7 +32,7 @@ async function main() {
     await weth.getAddress(),
     await usdc.getAddress(),
     await collPool.getAddress(),
-    await debtPool.getAddress()
+    await debtPool.getAddress(),
   );
   await lendingCore.waitForDeployment();
   console.log("ConfidentialLendingCore deployed to:", await lendingCore.getAddress());
@@ -54,4 +54,4 @@ main()
   .catch((error) => {
     console.error(error);
     process.exit(1);
-  }); 
+  });

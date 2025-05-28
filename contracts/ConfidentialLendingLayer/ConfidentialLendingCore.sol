@@ -61,47 +61,47 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     /* ─────────────────────────── CONSTANTS ────────────────────────── */
     /// @notice Basis points for percentage calculations (100%)
     uint256 public constant BASIS_POINTS = 10_000;
-    
+
     /// @notice Maximum loan-to-value ratio (80%)
     uint256 public constant MAX_VAULT_LTV = 8_000;
-    
+
     /// @notice Minimum health factor in basis points (115%)
     uint256 public constant MIN_USER_HF_BP = 11_500;
 
     /// @notice Price of WETH in USDC (6 decimals)
     uint256 public constant WETH_PRICE_USDC = 3_000_000_000; // 3,000 USDC per WETH
-    
+
     /// @notice Price of USDC in USDC (6 decimals)
     uint256 public constant USDC_PRICE_USDC = 1_000_000; // 1 USDC per USDC
 
     /// @notice Decimal places for WETH (18 decimals)
     uint256 public constant WETH_DECIMALS = 18;
-    
+
     /// @notice Decimal places for USDC (6 decimals)
     uint256 public constant USDC_DECIMALS = 6;
-    
+
     /// @notice Decimal places for cTokens (Compound V2 standard)
     uint256 public constant CTOKEN_DECIMALS = 8;
-    
+
     /// @notice Decimal places for exchange rate (underlyingDecimals + 10)
-    uint256 public constant EXCHANGE_RATE_DECIMALS = 28;  // WETH_DECIMALS + 10
+    uint256 public constant EXCHANGE_RATE_DECIMALS = 28; // WETH_DECIMALS + 10
 
     /// @notice Timeout for borrow decryption (60 seconds)
     uint256 public constant BORROW_TIMEOUT = 60;
-    
+
     /// @notice Timeout for withdraw/repay decryption (120 seconds)
     uint256 public constant WITHDRAW_REPAY_TIMEOUT = 120;
 
     /* ───────────────────────────── TOKENS ─────────────────────────── */
     /// @notice The underlying WETH token used as collateral
     IERC20 public immutable collateralToken;
-    
+
     /// @notice The underlying USDC token used as debt
     IERC20 public immutable debtToken;
-    
+
     /// @notice The cWETH token from Compound V2
     ICErc20 public immutable collateralCToken;
-    
+
     /// @notice The cUSDC token from Compound V2
     ICErc20 public immutable debtCToken;
 
@@ -109,7 +109,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     /// @notice Encrypted cToken balance for each user
     /// @dev Stored in cToken decimals (8)
     mapping(address => euint256) private _encryptedCollateralCToken;
-    
+
     /// @notice Encrypted debt balance for each user
     /// @dev Stored in USDC decimals (6)
     mapping(address => euint256) private _encryptedDebtUnderlying;
@@ -117,7 +117,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     /// @notice Total cTokens deposited in the protocol
     /// @dev Stored in cToken decimals (8)
     uint256 public totalCollateralCTokens;
-    
+
     /// @notice Total debt in the protocol
     /// @dev Stored in USDC decimals (6)
     uint256 public totalDebtUnderlying;
@@ -125,21 +125,21 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     /// @notice Structure for pending borrow requests
     struct PendingBorrow {
         address user;
-        euint256 amountEnc;  // Encrypted amount in USDC decimals (6)
+        euint256 amountEnc; // Encrypted amount in USDC decimals (6)
     }
 
     /// @notice Structure for pending withdraw requests
     struct PendingWithdraw {
         address user;
-        euint256 amount;  // Encrypted amount in cToken decimals (8)
+        euint256 amount; // Encrypted amount in cToken decimals (8)
     }
 
     /// @notice Mapping of request IDs to pending borrows
     mapping(uint256 => PendingBorrow) private _pendingBorrow;
-    
+
     /// @notice Mapping of request IDs to pending withdraws
     mapping(uint256 => PendingWithdraw) private _pendingWithdraw;
-    
+
     /// @notice Mapping of request IDs to pending repays
     mapping(uint256 => address) private _pendingRepay;
 
@@ -188,15 +188,15 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         // Convert cToken to underlying (WETH) using exchangeRate
         // cToken (8 decimals) * exchangeRate (28 decimals) / 1e8 = WETH (18 decimals)
         uint256 collateralInWeth = (newCollateralCTokens * collateralCToken.exchangeRateStored()) / 1e8;
-        
+
         // Convert WETH to USDC
         // WETH (18 decimals) * WETH_PRICE_USDC (6 decimals) / 1e18 = USDC (6 decimals)
         uint256 collateralInUsdc = (collateralInWeth * WETH_PRICE_USDC) / 1e18;
-        
+
         // Calculate max borrow in USDC
         // collateralInUsdc (6 decimals) * MAX_VAULT_LTV / BASIS_POINTS = USDC (6 decimals)
         uint256 maxBorrowUSDC = (collateralInUsdc * MAX_VAULT_LTV) / BASIS_POINTS;
-        
+
         // Convert debt to USDC (both already in 6 decimals)
         uint256 totalDebtUSDC = newDebt * USDC_PRICE_USDC;
 
@@ -216,18 +216,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     ) internal returns (ebool isHealthy) {
         // Convert collateral to USDC (6 decimals)
         // WETH (18 decimals) * USDC price (6 decimals) / 1e18 = USDC (6 decimals)
-        euint256 collateralInUsdc = TFHE.div(
-            TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC),
-            1e18
-        );
+        euint256 collateralInUsdc = TFHE.div(TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC), 1e18);
         TFHE.allow(collateralInUsdc, address(this));
 
         // Calculate max allowed debt in USDC (6 decimals)
         // collateralInUsdc (6 decimals) * MAX_VAULT_LTV / BASIS_POINTS = USDC (6 decimals)
-        euint256 maxAllowedDebt = TFHE.div(
-            TFHE.mul(collateralInUsdc, MAX_VAULT_LTV),
-            BASIS_POINTS
-        );
+        euint256 maxAllowedDebt = TFHE.div(TFHE.mul(collateralInUsdc, MAX_VAULT_LTV), BASIS_POINTS);
         TFHE.allow(maxAllowedDebt, address(this));
 
         // Compare max allowed debt with actual debt (both in USDC)
@@ -256,17 +250,14 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
      */
     function _encryptedCollateralUnderlying(address user) internal returns (euint256) {
         // Cache the exchange rate to avoid multiple calls
-        uint256 rate = collateralCToken.exchangeRateStored();  // 28 decimals (WETH_DECIMALS + 10)
+        uint256 rate = collateralCToken.exchangeRateStored(); // 28 decimals (WETH_DECIMALS + 10)
 
         // Get current collateral and convert to underlying in one operation
         euint256 currentCollateral = _safeSlot(_encryptedCollateralCToken[user]);
-        
+
         // Convert cToken to underlying (WETH)
         // cToken (8 decimals) * exchangeRate (28 decimals) / 1e8 = WETH (18 decimals)
-        euint256 result = TFHE.div(
-            TFHE.mul(currentCollateral, rate),
-            1e8
-        );
+        euint256 result = TFHE.div(TFHE.mul(currentCollateral, rate), 1e8);
         TFHE.allow(result, address(this));
         return result;
     }
@@ -499,7 +490,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
 
         // Transfer USDC from user
         debtToken.safeTransferFrom(user, address(this), repayAmount);
-        
+
         // Repay debt to Compound
         if (debtCToken.repayBorrow(repayAmount) != 0) revert RepayFailed();
 

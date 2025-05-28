@@ -445,8 +445,10 @@ describe("ConfidentialLendingCore", function () {
       const encAmt = await encIn.encrypt();
 
       // Attempt to withdraw while paused
-      await expect(this.core.withdraw(encAmt.handles[0], encAmt.inputProof))
-        .to.be.revertedWithCustomError(this.core, "EnforcedPause");
+      await expect(this.core.withdraw(encAmt.handles[0], encAmt.inputProof)).to.be.revertedWithCustomError(
+        this.core,
+        "EnforcedPause",
+      );
 
       // Unpause the contract
       await this.core.unpause();
@@ -467,8 +469,9 @@ describe("ConfidentialLendingCore", function () {
       await tx.wait();
 
       // Try to call withdrawCallback directly as a non-gateway address
-      await expect(this.core.connect(this.signers.bob).withdrawCallback(0, ethers.parseEther("2")))
-        .to.be.revertedWithoutReason();
+      await expect(
+        this.core.connect(this.signers.bob).withdrawCallback(0, ethers.parseEther("2")),
+      ).to.be.revertedWithoutReason();
     });
   });
 
@@ -479,8 +482,10 @@ describe("ConfidentialLendingCore", function () {
 
       // Try to deposit collateral
       await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
-      await expect(this.core.depositCollateral(ethers.parseEther("5")))
-        .to.be.revertedWithCustomError(this.core, "MintFailed");
+      await expect(this.core.depositCollateral(ethers.parseEther("5"))).to.be.revertedWithCustomError(
+        this.core,
+        "MintFailed",
+      );
 
       // Reset the mock
       await this.collPool.setMintShouldFail(false);
