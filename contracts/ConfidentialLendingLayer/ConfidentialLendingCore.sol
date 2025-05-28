@@ -13,7 +13,6 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { console } from "hardhat/console.sol";
 
 import { TFHE, euint256, einput, ebool } from "fhevm/lib/TFHE.sol";
 import { Gateway } from "fhevm/gateway/lib/Gateway.sol";
@@ -27,7 +26,7 @@ interface ICErc20 is IERC20 {
     function redeem(uint256) external returns (uint256);
     function borrow(uint256) external returns (uint256);
     function repayBorrow(uint256) external returns (uint256);
-    function exchangeRateStored() external view returns (uint256); // 18‑dec
+    function exchangeRateStored() external view returns (uint256); // underlyingDecimals + 10
 }
 
 contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayConfig, GatewayCaller, Pausable, Ownable {
@@ -48,6 +47,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     // Price constants (in USDC, with 6 decimals)
     uint256 public constant WETH_PRICE_USDC = 3_000_000_000; // 3,000 USDC per WETH
     uint256 public constant USDC_PRICE_USDC = 1_000_000; // 1 USDC per USDC
+
+    // Decimal constants
+    uint256 public constant WETH_DECIMALS = 18;
+    uint256 public constant USDC_DECIMALS = 6;
+    uint256 public constant CTOKEN_DECIMALS = 8;  // Compound V2 cTokens always have 8 decimals
+    uint256 public constant EXCHANGE_RATE_DECIMALS = 28;  // WETH_DECIMALS + 10 for exchangeRate
 
     /* ───────────────────────────── TOKENS ─────────────────────────── */
     IERC20 public immutable collateralToken;
@@ -105,12 +110,19 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
 
     /* ─────────────────────────── HELPERS ──────────────────────────── */
     function _requireVaultHealthy(uint256 newCollateralCTokens, uint256 newDebt) internal view {
-        // Convert collateral to USDC (6 decimals)
-        uint256 cTokenCollateralUsdc = (newCollateralCTokens *
-            collateralCToken.exchangeRateStored() *
-            WETH_PRICE_USDC) / 1e18;
-        uint256 maxBorrowUSDC = cTokenCollateralUsdc * MAX_VAULT_LTV;
-        uint256 totalDebtUSDC = newDebt * BASIS_POINTS;
+        // Convert cToken to underlying (WETH) using exchangeRate
+        // cToken (8 decimals) * exchangeRate (28 decimals) / 1e8 = WETH (18 decimals)
+        uint256 collateralInWeth = (newCollateralCTokens * collateralCToken.exchangeRateStored()) / 1e8;
+        
+        // Convert WETH to USDC
+        // WETH (18 decimals) * WETH_PRICE_USDC (6 decimals) / 1e18 = USDC (6 decimals)
+        uint256 collateralInUsdc = (collateralInWeth * WETH_PRICE_USDC) / 1e18;
+        
+        // Calculate max borrow in USDC
+        uint256 maxBorrowUSDC = (collateralInUsdc * MAX_VAULT_LTV) / BASIS_POINTS;
+        
+        // Convert debt to USDC (both already in 6 decimals)
+        uint256 totalDebtUSDC = newDebt * USDC_PRICE_USDC;
 
         if (maxBorrowUSDC < totalDebtUSDC) revert VaultHealthFactorLow();
     }
@@ -119,21 +131,26 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         euint256 encryptedCollateralUnderlying,
         euint256 encryptedDebtUnderlying
     ) internal returns (ebool isHealthy) {
-        // Convert collateral to USDC
-        euint256 collateralInUsdc = TFHE.div(TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC), 1e18);
+        // Convert collateral to USDC (6 decimals)
+        euint256 collateralInUsdc = TFHE.div(
+            TFHE.mul(encryptedCollateralUnderlying, WETH_PRICE_USDC),
+            1e18  // WETH (18 decimals) * USDC price (6 decimals) / 1e18 = USDC (6 decimals)
+        );
         TFHE.allow(collateralInUsdc, address(this));
 
-        // Calculate max allowed debt in USDC
-        euint256 maxAllowedDebt = TFHE.div(TFHE.mul(collateralInUsdc, BASIS_POINTS), MIN_USER_HF_BP);
+        // Calculate max allowed debt in USDC (6 decimals)
+        euint256 maxAllowedDebt = TFHE.div(
+            TFHE.mul(collateralInUsdc, MAX_VAULT_LTV),
+            BASIS_POINTS  // Scale by LTV
+        );
         TFHE.allow(maxAllowedDebt, address(this));
 
-        // Compare max allowed debt with actual debt (already in USDC)
+        // Compare max allowed debt with actual debt (both in USDC)
         isHealthy = TFHE.ge(maxAllowedDebt, encryptedDebtUnderlying);
         TFHE.allow(isHealthy, address(this));
     }
 
     function _safeSlot(euint256 s) internal returns (euint256) {
-        console.log("isInitialized", TFHE.isInitialized(s));
         if (TFHE.isInitialized(s)) return s;
         euint256 zero = TFHE.asEuint256(0);
         TFHE.allow(zero, address(this));
@@ -142,11 +159,17 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
 
     function _encryptedCollateralUnderlying(address user) internal returns (euint256) {
         // Cache the exchange rate to avoid multiple calls
-        uint256 rate = collateralCToken.exchangeRateStored();
+        uint256 rate = collateralCToken.exchangeRateStored();  // 28 decimals (WETH_DECIMALS + 10)
 
         // Get current collateral and convert to underlying in one operation
         euint256 currentCollateral = _safeSlot(_encryptedCollateralCToken[user]);
-        euint256 result = TFHE.div(TFHE.mul(currentCollateral, rate), 1e18);
+        
+        // Convert cToken to underlying (WETH)
+        // cToken (8 decimals) * exchangeRate (28 decimals) / 1e8 = WETH (18 decimals)
+        euint256 result = TFHE.div(
+            TFHE.mul(currentCollateral, rate),
+            1e8  // Divide by 1e8 since cToken has 8 decimals
+        );
         TFHE.allow(result, address(this));
         return result;
     }
@@ -155,26 +178,16 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         euint256 currentAmount = _safeSlot(_encryptedCollateralCToken[user]);
         _encryptedCollateralCToken[user] = isAdd ? TFHE.add(currentAmount, amount) : TFHE.sub(currentAmount, amount);
 
-        // Allow access to the updated value for both the contract and user
         TFHE.allow(_encryptedCollateralCToken[user], address(this));
         TFHE.allow(_encryptedCollateralCToken[user], user);
     }
 
     function _updateEncryptedDebt(address user, euint256 amount, bool isAdd) internal {
-        console.log("user", user);
-        // Get current debt once
         euint256 currentAmount = _safeSlot(_encryptedDebtUnderlying[user]);
-        console.log("currentAmount", Gateway.toUint256(currentAmount));
-        console.log("amount", Gateway.toUint256(amount));
-
-        // Update debt in one operation
         _encryptedDebtUnderlying[user] = isAdd ? TFHE.add(currentAmount, amount) : TFHE.sub(currentAmount, amount);
 
-        // Allow access to the updated value for both the contract and user
         TFHE.allow(_encryptedDebtUnderlying[user], address(this));
         TFHE.allow(_encryptedDebtUnderlying[user], user);
-
-        console.log("newAmount", Gateway.toUint256(_encryptedDebtUnderlying[user]));
     }
 
     /* ────────────────────────── USER ACTIONS ───────────────────────── */
@@ -236,22 +249,16 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     }
 
     function borrow(einput encryptedUnderlyingAmount, bytes calldata proofUnderlyingAmount) external whenNotPaused {
-        // Decrypt and validate the borrow amount
         euint256 underlyingAmountEnc = TFHE.asEuint256(encryptedUnderlyingAmount, proofUnderlyingAmount);
         TFHE.allow(underlyingAmountEnc, address(this));
 
-        // Get current collateral and debt in one go to reduce FHE operations
         euint256 encryptedCollateralUnderlying = _encryptedCollateralUnderlying(msg.sender);
         euint256 encryptedDebtUnderlying = _safeSlot(_encryptedDebtUnderlying[msg.sender]);
 
-        // Check health factor and queue borrow
         ebool isUserHealthy = _requireUserHealthy(encryptedCollateralUnderlying, encryptedDebtUnderlying);
-
-        // Use select to either use the requested amount or zero
         euint256 queued = TFHE.select(isUserHealthy, underlyingAmountEnc, TFHE.asEuint256(0));
         TFHE.allow(queued, address(this));
 
-        // Request decryption with a shorter timeout to reduce gas
         uint256[] memory cts = new uint256[](1);
         cts[0] = Gateway.toUint256(queued);
         uint256 id = Gateway.requestDecryption(cts, this.borrowCallback.selector, 0, block.timestamp + 60, false);
@@ -261,35 +268,21 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     }
 
     function borrowCallback(uint256 id, uint256 borrowAmount) external onlyGateway {
-        console.log("borrowAmount", borrowAmount);
         PendingBorrow memory pendingBorrow = _pendingBorrow[id];
         delete _pendingBorrow[id];
 
         if (borrowAmount == 0) return;
 
-        // Update state before external calls
         uint256 newDebt = totalDebtUnderlying + borrowAmount;
         _requireVaultHealthy(totalCollateralCTokens, newDebt);
 
-        console.log("Before update encrypted debt");
-        // Update encrypted debt first
         _updateEncryptedDebt(pendingBorrow.user, TFHE.asEuint256(borrowAmount), true);
-        console.log("After update encrypted debt");
         totalDebtUnderlying = newDebt;
 
-        // Perform external calls last
-        console.log("cToken address", address(debtCToken));
         uint256 success = debtCToken.borrow(borrowAmount);
-        console.log("borrow success", success);
         if (success != 0) revert BorrowFailed();
-        console.log("Before transfer");
-        console.log("Balance", debtToken.balanceOf(address(this)));
-        console.log("Is greater than borrowAmount", debtToken.balanceOf(address(this)) > borrowAmount);
         debtToken.safeTransfer(pendingBorrow.user, borrowAmount);
-        console.log("After transfer");
 
-        console.log("User", pendingBorrow.user);
-        console.log("borrowAmount", borrowAmount);
         emit Borrowed(pendingBorrow.user, borrowAmount);
     }
 

@@ -21,7 +21,7 @@ contract MockCompoundPool is IERC20Metadata {
 
     string public name;
     string public symbol;
-    uint8 public constant decimals = 18;
+    uint8 public constant decimals = 8;
 
     constructor(address _underlying) {
         underlying = IERC20Metadata(_underlying);
