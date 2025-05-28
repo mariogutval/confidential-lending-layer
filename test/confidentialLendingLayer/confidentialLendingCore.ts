@@ -167,11 +167,8 @@ describe("ConfidentialLendingCore", function () {
       await awaitAllDecryptionResults();
 
       // Check encrypted amounts
-      console.log("Alice address", this.signers.alice.address);
       const encryptedColl = await this.core.encryptedCollOf(this.signers.alice.address);
-      console.log("encryptedColl", encryptedColl);
       const encryptedDebt = await this.core.encryptedDebtOf(this.signers.alice.address);
-      console.log("encryptedDebt", encryptedDebt);
 
       // Decrypt and verify values
       const coll = await debug.decrypt256(encryptedColl);

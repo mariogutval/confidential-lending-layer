@@ -4,8 +4,6 @@ pragma solidity 0.8.24;
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import "hardhat/console.sol";
-
 interface IMintableERC20 is IERC20Metadata {
     function mint(address to, uint256 amount) external;
 }
@@ -43,15 +41,10 @@ contract MockCompoundPool is IERC20Metadata {
 
     function borrow(uint256 amount) external returns (uint256) {
         // For testing, we'll mint the underlying token if needed
-        console.log("Borrowing");
         uint256 balance = underlying.balanceOf(address(this));
-        console.log("balance", balance);
         if (balance < amount) {
-            console.log("amount", amount);
             IMintableERC20(address(underlying)).mint(address(this), amount - balance);
-            console.log("minted", amount - balance);
         }
-        console.log("transfer");
         underlying.safeTransfer(msg.sender, amount);
         return 0; // Success
     }
