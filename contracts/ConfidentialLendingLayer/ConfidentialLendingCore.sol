@@ -54,6 +54,9 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     error MintFailed();
     error RedeemFailed();
     error BorrowFailed();
+    error RepayFailed();
+    error InvalidDecryption();
+    error InvalidProof();
 
     /* ─────────────────────────── CONSTANTS ────────────────────────── */
     /// @notice Basis points for percentage calculations (100%)
@@ -82,6 +85,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
     
     /// @notice Decimal places for exchange rate (underlyingDecimals + 10)
     uint256 public constant EXCHANGE_RATE_DECIMALS = 28;  // WETH_DECIMALS + 10
+
+    /// @notice Timeout for borrow decryption (60 seconds)
+    uint256 public constant BORROW_TIMEOUT = 60;
+    
+    /// @notice Timeout for withdraw/repay decryption (120 seconds)
+    uint256 public constant WITHDRAW_REPAY_TIMEOUT = 120;
 
     /* ───────────────────────────── TOKENS ─────────────────────────── */
     /// @notice The underlying WETH token used as collateral
@@ -226,6 +235,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         TFHE.allow(isHealthy, address(this));
     }
 
+    /**
+     * @notice Safely gets an encrypted value, returning 0 if not initialized
+     * @dev This prevents FHE operations on uninitialized values
+     * @param s The encrypted value to check
+     * @return The encrypted value or 0 if not initialized
+     */
     function _safeSlot(euint256 s) internal returns (euint256) {
         if (TFHE.isInitialized(s)) return s;
         euint256 zero = TFHE.asEuint256(0);
@@ -233,6 +248,12 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         return zero;
     }
 
+    /**
+     * @notice Converts a user's encrypted cToken balance to underlying WETH
+     * @dev Uses Compound V2's exchange rate to convert cToken to WETH
+     * @param user The user's address
+     * @return The encrypted WETH balance (18 decimals)
+     */
     function _encryptedCollateralUnderlying(address user) internal returns (euint256) {
         // Cache the exchange rate to avoid multiple calls
         uint256 rate = collateralCToken.exchangeRateStored();  // 28 decimals (WETH_DECIMALS + 10)
@@ -250,6 +271,13 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         return result;
     }
 
+    /**
+     * @notice Updates a user's encrypted cToken balance
+     * @dev Handles both deposits and withdrawals
+     * @param user The user's address
+     * @param amount The amount to add or subtract (8 decimals)
+     * @param isAdd True to add, false to subtract
+     */
     function _updateEncryptedCollateral(address user, euint256 amount, bool isAdd) internal {
         euint256 currentAmount = _safeSlot(_encryptedCollateralCToken[user]);
         _encryptedCollateralCToken[user] = isAdd ? TFHE.add(currentAmount, amount) : TFHE.sub(currentAmount, amount);
@@ -258,12 +286,37 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         TFHE.allow(_encryptedCollateralCToken[user], user);
     }
 
+    /**
+     * @notice Updates a user's encrypted debt balance
+     * @dev Handles both borrows and repays
+     * @param user The user's address
+     * @param amount The amount to add or subtract (6 decimals)
+     * @param isAdd True to add, false to subtract
+     */
     function _updateEncryptedDebt(address user, euint256 amount, bool isAdd) internal {
         euint256 currentAmount = _safeSlot(_encryptedDebtUnderlying[user]);
         _encryptedDebtUnderlying[user] = isAdd ? TFHE.add(currentAmount, amount) : TFHE.sub(currentAmount, amount);
 
         TFHE.allow(_encryptedDebtUnderlying[user], address(this));
         TFHE.allow(_encryptedDebtUnderlying[user], user);
+    }
+
+    /**
+     * @notice Requests decryption of an encrypted value
+     * @dev Handles the common decryption request pattern
+     * @param encryptedValue The encrypted value to decrypt
+     * @param callbackSelector The selector of the callback function
+     * @param timeout The timeout in seconds
+     * @return id The decryption request ID
+     */
+    function _requestDecryption(
+        euint256 encryptedValue,
+        bytes4 callbackSelector,
+        uint256 timeout
+    ) internal returns (uint256 id) {
+        uint256[] memory cts = new uint256[](1);
+        cts[0] = Gateway.toUint256(encryptedValue);
+        id = Gateway.requestDecryption(cts, callbackSelector, 0, block.timestamp + timeout, false);
     }
 
     /* ────────────────────────── USER ACTIONS ───────────────────────── */
@@ -311,9 +364,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         TFHE.allow(queued, address(this));
 
         // Request decryption
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = Gateway.toUint256(queued);
-        uint256 id = Gateway.requestDecryption(cts, this.withdrawCallback.selector, 0, block.timestamp + 120, false);
+        uint256 id = _requestDecryption(queued, this.withdrawCallback.selector, WITHDRAW_REPAY_TIMEOUT);
         _pendingWithdraw[id] = PendingWithdraw(msg.sender, queued);
 
         emit WithdrawQueued(msg.sender, id);
@@ -367,13 +418,11 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
 
         // Check health factor
         ebool isUserHealthy = _requireUserHealthy(encryptedCollateralUnderlying, encryptedDebtUnderlying);
-        euint256 queued = TFHE.select(isUserHealthy, underlyingAmountEnc, TFHE.asEuint256(0));
+        euint256 queued = TFHE.select(isUserHealthy, underlyingAmountEnc, TFHE.asEuint256(uint256(0)));
         TFHE.allow(queued, address(this));
 
         // Request decryption
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = Gateway.toUint256(queued);
-        uint256 id = Gateway.requestDecryption(cts, this.borrowCallback.selector, 0, block.timestamp + 60, false);
+        uint256 id = _requestDecryption(queued, this.borrowCallback.selector, BORROW_TIMEOUT);
         _pendingBorrow[id] = PendingBorrow(msg.sender, queued);
 
         emit BorrowQueued(msg.sender, id);
@@ -432,9 +481,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         TFHE.allow(result, address(this));
 
         // Request decryption
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = Gateway.toUint256(result);
-        uint256 id = Gateway.requestDecryption(cts, this.repayCallback.selector, 0, block.timestamp + 120, false);
+        uint256 id = _requestDecryption(result, this.repayCallback.selector, WITHDRAW_REPAY_TIMEOUT);
         _pendingRepay[id] = msg.sender;
 
         emit RepayQueued(msg.sender, id);
@@ -454,7 +501,7 @@ contract ConfidentialLendingCore is SepoliaZamaFHEVMConfig, SepoliaZamaGatewayCo
         debtToken.safeTransferFrom(user, address(this), repayAmount);
         
         // Repay debt to Compound
-        debtCToken.repayBorrow(repayAmount);
+        if (debtCToken.repayBorrow(repayAmount) != 0) revert RepayFailed();
 
         // Update encrypted balances
         _updateEncryptedDebt(user, TFHE.asEuint256(repayAmount), false);

@@ -21,10 +21,22 @@ contract MockCompoundPool is IERC20Metadata {
     string public symbol;
     uint8 public constant decimals = 8;
 
+    // Flag to control redeem failure
+    bool public redeemShouldFail;
+
     constructor(address _underlying) {
         underlying = IERC20Metadata(_underlying);
         name = string.concat("Compound ", IERC20Metadata(_underlying).name());
         symbol = string.concat("c", IERC20Metadata(_underlying).symbol());
+    }
+
+    /**
+     * @notice Sets whether the redeem operation should fail
+     * @dev This is used for testing failure scenarios
+     * @param shouldFail Whether redeem should fail
+     */
+    function setRedeemShouldFail(bool shouldFail) external {
+        redeemShouldFail = shouldFail;
     }
 
     function mint(uint256 amount) external returns (uint256) {
@@ -34,6 +46,9 @@ contract MockCompoundPool is IERC20Metadata {
     }
 
     function redeem(uint256 amount) external returns (uint256) {
+        if (redeemShouldFail) {
+            return 1; // Failure
+        }
         _burn(msg.sender, amount);
         underlying.safeTransfer(msg.sender, amount);
         return 0; // Success

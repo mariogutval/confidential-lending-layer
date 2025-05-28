@@ -406,5 +406,69 @@ describe("ConfidentialLendingCore", function () {
       // The vault health check should fail in the callback
       expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "VaultHealthFactorLow");
     });
+
+    it("should revert when withdraw operation fails", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Mock the collateralCToken to fail on redeem
+      await this.collPool.setRedeemShouldFail(true);
+
+      // Create encrypted withdraw amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(ethers.parseEther("2")); // Withdraw 2 WETH
+      const encAmt = await encIn.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encAmt.handles[0], encAmt.inputProof);
+      await tx.wait();
+
+      // The callback should revert with RedeemFailed error
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "RedeemFailed");
+
+      // Reset the mock
+      await this.collPool.setRedeemShouldFail(false);
+    });
+
+    it("should revert when withdraw is called while paused", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Pause the contract
+      await this.core.pause();
+
+      // Create encrypted withdraw amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(ethers.parseEther("2")); // Withdraw 2 WETH
+      const encAmt = await encIn.encrypt();
+
+      // Attempt to withdraw while paused
+      await expect(this.core.withdraw(encAmt.handles[0], encAmt.inputProof))
+        .to.be.revertedWithCustomError(this.core, "EnforcedPause");
+
+      // Unpause the contract
+      await this.core.unpause();
+    });
+
+    it("should revert when withdrawCallback is called by non-gateway", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Create encrypted withdraw amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(ethers.parseEther("2")); // Withdraw 2 WETH
+      const encAmt = await encIn.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encAmt.handles[0], encAmt.inputProof);
+      await tx.wait();
+
+      // Try to call withdrawCallback directly as a non-gateway address
+      await expect(this.core.connect(this.signers.bob).withdrawCallback(0, ethers.parseEther("2")))
+        .to.be.revertedWithoutReason();
+    });
   });
 });
