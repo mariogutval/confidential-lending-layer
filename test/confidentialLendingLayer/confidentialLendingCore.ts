@@ -471,4 +471,102 @@ describe("ConfidentialLendingCore", function () {
         .to.be.revertedWithoutReason();
     });
   });
+
+  describe("Operation failures", function () {
+    it("should revert when mint operation fails", async function () {
+      // Mock the collateralCToken to fail on mint
+      await this.collPool.setMintShouldFail(true);
+
+      // Try to deposit collateral
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await expect(this.core.depositCollateral(ethers.parseEther("5")))
+        .to.be.revertedWithCustomError(this.core, "MintFailed");
+
+      // Reset the mock
+      await this.collPool.setMintShouldFail(false);
+    });
+
+    it("should revert when borrow operation fails", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Mock the debtCToken to fail on borrow
+      await this.debtPool.setBorrowShouldFail(true);
+
+      // Create encrypted borrow amount
+      const encBorrow = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encBorrow.add256(100 * 1e6); // 100 USDC
+      const encB = await encBorrow.encrypt();
+
+      // Attempt to borrow
+      const borrowTx = await this.core.borrow(encB.handles[0], encB.inputProof);
+      await borrowTx.wait();
+
+      // The callback should revert with BorrowFailed error
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "BorrowFailed");
+
+      // Reset the mock
+      await this.debtPool.setBorrowShouldFail(false);
+    });
+
+    it("should revert when repay operation fails", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Borrow some USDC
+      const encBorrow = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encBorrow.add256(100 * 1e6); // 100 USDC
+      const encB = await encBorrow.encrypt();
+      await this.core.borrow(encB.handles[0], encB.inputProof);
+      await awaitAllDecryptionResults();
+
+      // Mint and approve USDC for repayment
+      await this.debt.mint(this.signers.alice, 100 * 1e6);
+      await this.debt.connect(this.signers.alice).approve(this.core, 100 * 1e6);
+
+      // Mock the debtCToken to fail on repay
+      await this.debtPool.setRepayShouldFail(true);
+
+      // Create encrypted repay amount
+      const encRepay = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encRepay.add256(100 * 1e6);
+      const encR = await encRepay.encrypt();
+
+      // Attempt to repay
+      const repayTx = await this.core.repay(100 * 1e6, encR.handles[0], encR.inputProof);
+      await repayTx.wait();
+
+      // The callback should revert with RepayFailed error
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "RepayFailed");
+
+      // Reset the mock
+      await this.debtPool.setRepayShouldFail(false);
+    });
+
+    it("should revert when redeem operation fails", async function () {
+      // Deposit collateral first
+      await this.coll.connect(this.signers.alice).approve(this.core, ethers.parseEther("5"));
+      await this.core.depositCollateral(ethers.parseEther("5"));
+
+      // Mock the collateralCToken to fail on redeem
+      await this.collPool.setRedeemShouldFail(true);
+
+      // Create encrypted withdraw amount
+      const encIn = this.fhevm.createEncryptedInput(await this.core.getAddress(), this.signers.alice.address);
+      encIn.add256(ethers.parseEther("2")); // Withdraw 2 WETH
+      const encAmt = await encIn.encrypt();
+
+      // Request withdraw
+      const tx = await this.core.withdraw(encAmt.handles[0], encAmt.inputProof);
+      await tx.wait();
+
+      // The callback should revert with RedeemFailed error
+      expect(await awaitAllDecryptionResults()).to.be.revertedWithCustomError(this.core, "RedeemFailed");
+
+      // Reset the mock
+      await this.collPool.setRedeemShouldFail(false);
+    });
+  });
 });

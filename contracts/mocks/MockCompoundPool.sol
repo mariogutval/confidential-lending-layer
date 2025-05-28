@@ -21,8 +21,11 @@ contract MockCompoundPool is IERC20Metadata {
     string public symbol;
     uint8 public constant decimals = 8;
 
-    // Flag to control redeem failure
+    // Flags to control operation failures
     bool public redeemShouldFail;
+    bool public mintShouldFail;
+    bool public repayShouldFail;
+    bool public borrowShouldFail;
 
     constructor(address _underlying) {
         underlying = IERC20Metadata(_underlying);
@@ -39,7 +42,37 @@ contract MockCompoundPool is IERC20Metadata {
         redeemShouldFail = shouldFail;
     }
 
+    /**
+     * @notice Sets whether the mint operation should fail
+     * @dev This is used for testing failure scenarios
+     * @param shouldFail Whether mint should fail
+     */
+    function setMintShouldFail(bool shouldFail) external {
+        mintShouldFail = shouldFail;
+    }
+
+    /**
+     * @notice Sets whether the repay operation should fail
+     * @dev This is used for testing failure scenarios
+     * @param shouldFail Whether repay should fail
+     */
+    function setRepayShouldFail(bool shouldFail) external {
+        repayShouldFail = shouldFail;
+    }
+
+    /**
+     * @notice Sets whether the borrow operation should fail
+     * @dev This is used for testing failure scenarios
+     * @param shouldFail Whether borrow should fail
+     */
+    function setBorrowShouldFail(bool shouldFail) external {
+        borrowShouldFail = shouldFail;
+    }
+
     function mint(uint256 amount) external returns (uint256) {
+        if (mintShouldFail) {
+            return 1; // Failure
+        }
         underlying.safeTransferFrom(msg.sender, address(this), amount);
         _mint(msg.sender, amount);
         return 0; // Success
@@ -55,6 +88,9 @@ contract MockCompoundPool is IERC20Metadata {
     }
 
     function borrow(uint256 amount) external returns (uint256) {
+        if (borrowShouldFail) {
+            return 1; // Failure
+        }
         // For testing, we'll mint the underlying token if needed
         uint256 balance = underlying.balanceOf(address(this));
         if (balance < amount) {
@@ -65,6 +101,9 @@ contract MockCompoundPool is IERC20Metadata {
     }
 
     function repayBorrow(uint256 amount) external returns (uint256) {
+        if (repayShouldFail) {
+            return 1; // Failure
+        }
         underlying.safeTransferFrom(msg.sender, address(this), amount);
         return 0; // Success
     }
